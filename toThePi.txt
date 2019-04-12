@@ -1,0 +1,414 @@
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+
+/*Prototypes of all internal functions*/
+void set(std::string arg);
+void config(std::string arg);
+void command(char* path, char* args[]);
+void echo(std::vector<std::string> args);
+void cd(std::string arg);
+void ls(std::vector<std::string> parsed, char* pass_argv[64]);
+void add_path(std::string newPath);
+
+std::vector<std::string> pathParse (std::string arg);
+std::vector<std::string> parseAt (std::string toSplit, std::string delimiters);
+std::string upOneDir (std::string newPWD);
+
+/*Global variables (in this case, all are environmental variables)*/
+std::string $PROMPT;
+std::string $HISTCNT;
+std::string $RETURNSTATUS;
+std::string $HOME;
+std::string $PWD;
+std::string $PATH;
+
+int main (int argc, char* argv[]) {
+	
+	/*initialize the string to hold user input, as well as the delimiter string used to parse it. */
+	std::string input;
+	std::string delims;
+	
+	/*Char* array to be used when executing commands */
+	char* pass_argv[64];
+	
+	/*Create a file stream and a string to hold each line from the config file, here named "shell.config."
+	Then feeds each line into a config function for setup. */
+	std::ifstream config_input("shell.config");
+	std::string config_line;
+
+	while(std::getline( config_input, config_line)) {
+		
+		config(config_line);
+	}
+
+	/*Initialize $PWD to the $HOME directory specified in the config file. */
+
+	$PWD = $HOME;
+
+	/*Variable which tracks how many commands have been entered, up to $HISTCNT.
+			(Only relevant while k < $HISTCNT) */
+	int k = 0;
+
+	/*Create vectors which store commands previously entered and the entered string, parsed at spaces. */
+	std::vector<std::string> pastCommands;	
+	std::vector<std::string> parsedString;	
+
+	/*Flag to allow exiting the shell */
+	int keepLooping = 1;
+
+	/*Execution Loop! */
+	while(keepLooping){
+	
+		/*Set pass_argv to all null pointers to 'clear' it */
+
+		for (int i = 0; i < 64; i++)
+			pass_argv[i] = nullptr;		
+
+		/*Print the prompt, get a line. */
+		std::cout << $PROMPT;
+		std::getline (std::cin, input);
+		
+		/*Parse the input line at each space. */
+		delims = " ";
+		parsedString = parseAt(input, delims);
+
+		/*Put the parsed strings into our array of arguments. */
+		for (int i = 0; i < parsedString.size(); i++)	{
+			
+			pass_argv[i] = &parsedString[i][0];
+		}
+
+		/* Update history, clearing one command from it if k = $HISTCNT. */
+		if	(k < std::stoi($HISTCNT))
+			k++;
+		
+		else if (k > std::stoi($HISTCNT)) {
+			int cut = k - std::stoi($HISTCNT);
+			for (int i = 0; i < cut + 1; i++)
+				pastCommands.erase(pastCommands.begin());
+			k = std::stoi($HISTCNT);
+		} else
+			pastCommands.erase(pastCommands.begin());
+
+		/*Whether we removed the first item or not, always add most recent to the back. */
+			pastCommands.push_back(input);
+			
+		/*Splits all args into the command string and the argument string. */
+
+		std::string comm_string(pass_argv[0]);
+		std::string arg_string;
+	
+		for (int i = 1; pass_argv[i] != NULL; i++)	{
+
+			std::string temp_string(pass_argv[i]);
+			if (i > 1)
+				arg_string.append(" ");
+			arg_string.append(temp_string);
+		}
+	
+
+		/*Brute force check for each internal command, otherwise try toss it off to execv(). */
+		if (comm_string == "set")
+			set (arg_string);
+		else if (comm_string == "history") {
+
+			for (int i = 0; i < k; i++)
+				std::cout << pastCommands[i] << "\n";
+
+		}else if (comm_string == "echo")
+			echo(parsedString);
+		else if (comm_string == "cd")
+			cd(arg_string);
+		else if (comm_string == "ls")
+			ls(parsedString, pass_argv);
+		else if (comm_string == "addpath")
+			add_path(arg_string);
+		else if (comm_string == ".quit")
+			/*The ticket out of the main while loop! */
+			keepLooping = 0;
+		else	{
+
+		/*Check if the command is an absolute path. */
+			switch (parsedString[0][0])	{
+		
+				case ('/'):
+				/*See if the file exists/is executable, and runs it with my command function if both are true. */
+					if (!access(pass_argv[0], F_OK))	{
+						if (!access(pass_argv[0], X_OK)) {
+							command(pass_argv[0], pass_argv);
+							/*Inefficient, but currently functioning,  way of getting the prompt to print
+							 again AFTER child process execution*/
+							usleep(100000);
+						}	else	
+							std::cout << "Not executable!\n";
+					}	else
+						std::cout << "File not found!\n";
+					break;
+				default:
+				/*Not an absolute path, so we create an absolute path with $PWD, and proceeds accordingly. */
+					std::string initCommand = parsedString[0];
+					parsedString[0] = $PWD + "/" + parsedString[0];
+					pass_argv[0] = &parsedString[0][0];
+
+					if (!access(pass_argv[0], F_OK))	{	
+						if (!access(pass_argv[0], X_OK))	{
+							command(pass_argv[0], pass_argv);
+							usleep(100000);
+						}	else
+							std::cout << "Not executable!\n";
+					}	else	{
+						int found_it = 0;
+						std::vector<std::string> paths = parseAt($PATH, ":");
+						for(int i = 0; i < paths.size(); i++)	{
+
+							parsedString[0] = paths[i] + "/" + initCommand;
+							pass_argv[0] = &parsedString[0][0];
+							if (!access(pass_argv[0], X_OK))	{
+								found_it = 1;
+								command(pass_argv[0], pass_argv);
+								usleep(100000);
+							}
+						}
+						if (!found_it)	
+							std::cout << "File not found!\n";
+					}
+					break;
+			}
+		}	
+	}
+	return 0;
+}
+
+/*Takes whatever is to the left of the equals sign and tries to identify it as a variable that can be set.
+If it is, it takes whatever is to the left of the equals sign and plops it in. << (technical terminology) */
+
+void set (std::string arg)	{
+	
+	std::string var;
+	std::string setTo;
+	size_t equals = arg.find_first_of("=");
+
+	var = arg.substr(0,equals);
+	setTo = arg.substr(equals+1,arg.size()-equals);
+
+	if (var == "$PROMPT") {
+		$PROMPT = setTo;
+		std::cout << "Set $PROMPT to " << $PROMPT << '\n';
+	}	else if (var == "$HISTCNT")	{
+		$HISTCNT = setTo;
+		std::cout << "Set $HISTCNT to " << $HISTCNT << '\n';
+	}	else if (var == "$RETURNSTATUS")	{
+		if (setTo == "true" || setTo == "false")	{
+			$RETURNSTATUS = setTo;
+			std::cout << "Set $RETURNSTATUS to " << $RETURNSTATUS << "\n";
+		}	else	std::cout<< "Unknown entry for $RETURNSTATUS" << "\n";
+	}	else if (var == $HOME)	{
+			$HOME = setTo;
+	}	else if (var == $PWD)	{
+			$PWD = setTo;
+	}	else
+		std::cout << "Not an environment variable that can be changed... \n";
+
+	return;
+}
+
+/*The set function without most couts to be used in config. */
+void config (std::string arg)	{
+	std::string var;
+	std::string setTo;
+	std::size_t equals = arg.find_first_of("=");
+
+	var = arg.substr(0,equals);
+	setTo = arg.substr(equals+1,arg.size()-equals);
+
+	if (var == "$PROMPT") {
+		$PROMPT = setTo;
+	}	else if (var == "$HISTCNT")	{
+		$HISTCNT = setTo;
+	}	else if (var == "$RETURNSTATUS"){
+		if (setTo == "true" || setTo == "false")
+			$RETURNSTATUS = setTo;
+		else	std::cout << "Unknown entry for $RETURNSTATUS" << "\n";
+	}	else if (var == "$HOME")	{
+			$HOME = setTo;
+	}	else if (var == "$PWD")	{
+			$PWD = setTo;
+	}	else if (var == "$PATH"){
+			$PATH = setTo;
+	}	else
+		std::cout << "There seems to be an error in shell.config....\n";
+}
+
+/*Using fork() and execv(), executes specified command with the specified arguments. */
+void command (char* path, char* args[])	{
+
+	pid_t pid = fork();
+
+	if (pid == 0)	{
+	//Child
+	execv(path, args);
+	}
+	else if (pid < 1){
+	//Error
+		std::cout << "Uhh... fork broke.\n";
+		exit(1);
+	}
+	else	{
+	//Parent
+		int status;
+		waitpid(pid, &status, WNOHANG);
+		if ($RETURNSTATUS == "true")
+			std::cout << "Child returned exit status: " << status << "\n";
+		else if ($RETURNSTATUS == "false");
+		else
+			std::cout << "Unknown entry for $RETURNSTATUS" << "\n";
+	}
+}
+
+/*Prints out the environmental variable, or whines that it can't print what was entered. */
+void echo (std::vector<std::string> arg)	{
+
+	arg.push_back("End of input");
+	int i = 1;
+	while (arg[i] != "End of input")	{
+
+		if (arg[i] == "$HOME")
+			std::cout << $HOME << "\n";
+		else if (arg[i] == "$PWD")
+			std::cout << $PWD << "\n";
+		else if (arg[i] == "$PROMPT")
+			std::cout << $PROMPT << "\n";
+		else if (arg[i] == "$PATH")
+			std::cout << $PATH << "\n";
+		else if (arg[i] == "$HISTCNT")
+			std::cout << $HISTCNT << "\n";
+		else if (arg[i] == "$RETURNSTATUS")
+			std::cout << $RETURNSTATUS << "\n";
+		else
+			std::cout << "Not something I can output..." << "\n";
+		i++;
+	}
+}
+
+/*Changes contents of $PWD based on the dots or directories in between "/"'s. */
+void cd (std::string arg)	{
+
+	std::vector<std::string> eachDir;
+	std::string newPWD = $PWD;
+
+	if (arg[0] == '/')	{
+		/*arg string is an absolute path */
+		$newPWD = arg;
+	} else	{
+
+		if (arg == "$HOME")	{
+			$PWD = $HOME;
+			return;
+		} else	{
+		
+			eachDir = parseAt(arg, "/");
+			
+			for (int i = 0; i < eachDir.size(); i++)	{
+		
+				if (eachDir[i] == "..")	{
+					newPWD = upOneDir(newPWD);
+				}
+
+				else if (eachDir[i] == ".")	
+					continue;
+
+				else	{
+					newPWD.append("/");	
+					newPWD.append(eachDir[i]);
+				}
+		
+			}
+		}
+	}	
+	
+	/*Checks resultant path, sets $PWD to it if it is valid. */
+	if (access(newPWD.c_str(), F_OK) == 0)
+		$PWD = newPWD;
+	else
+		std::cout << "Invalid path or directory does not exist" << "\n";
+}
+
+/*Accepting in a string to parse and what to parse at, returns a vector of strings consisting
+of the contents between each delimiter. */
+std::vector<std::string> parseAt (std::string toSplit, std::string delimiters)	{
+	
+	std::vector<std::string> toReturn;
+	std::size_t divide = toSplit.find_first_of(delimiters);
+	std::size_t temp = 0;
+	
+	while (divide != -1)	{
+		toReturn.push_back(toSplit.substr(temp, divide - temp));
+		temp = divide + 1;
+		divide = toSplit.find_first_of(delimiters, temp);
+	}
+	
+	toReturn.push_back(toSplit.substr(temp, toSplit.size() - temp));
+	return toReturn;
+}
+
+/*Used by cd, finds out what the last directory is in an absolute path, and returns a path without that 
+directory. */
+std::string upOneDir (std::string oldPWD)	{
+
+	std::string newPWD;
+	int lastSlash;
+	int nextSlash;
+	
+	nextSlash = oldPWD.find("/");
+
+	while(nextSlash > -1)	{
+		lastSlash = nextSlash;
+		nextSlash = (oldPWD.find("/", lastSlash+1));
+	}
+	
+	newPWD = oldPWD.substr(0, lastSlash);
+	return newPWD;
+}	
+
+/*Internal ls command to show contents of whatever $PWD is (or $PWD/[user-entered directory]). */
+void ls (std::vector<std::string> parsed, char* pass_argv[64])	{
+
+	int i = 1;
+	
+	parsed.push_back("");
+
+	while (parsed[i][0] == '-')	{
+		i++;
+	}
+	
+	parsed[0] = "/bin/ls";
+	pass_argv[0] = &parsed[0][0];
+
+	std::string savePWD = $PWD;
+	cd(parsed[i]);
+	pass_argv[1] = &$PWD[0];
+
+	command(pass_argv[0], pass_argv);
+	usleep(100000);
+	$PWD = savePWD;
+}
+
+/*Appends $PATH with whatever is entered, as long as what was entered is a valid path. */
+void add_path (std::string newPath)	{
+
+	if (newPath[0] != '/'){
+		std::cout << "Not an absolute path..." << "\n";
+		return;
+	}
+	if (!access(newPath.c_str(), F_OK)){
+		$PATH = $PATH + ':' + newPath;
+		std::cout << "added " << newPath << " to $PATH" << "\n";
+	}  else
+		std::cout << "Not a valid path..." << "\n";
+}
