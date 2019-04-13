@@ -1,0 +1,27 @@
+<html>
+
+<head>
+</head>
+<body>
+	<div id='rotation'>Current Degress: </div>
+	<br />
+	<br />
+	<form action='.' method = 'get'>
+		<button button='button' onclick = 'loadDoc(10)'>Move Left 10&#176</button><br />
+		<button button='button' onclick='loadDoc(-10)'>Move Right 10&#176</button><br />
+	</form>
+
+	<script>
+		function loadDoc(rot) {
+			var xhttp = new XMLHttpRequest();
+			xhttp.onreadystatechange = function() {
+				if (xhttp.readyState == 4 && xhttp.status == 200) {
+					document.getElementById('rotation').innerHTML = "Changed Degrees: "
+				}
+			}
+			xhttp.open("GET", "run_servo.php?d=10",true);
+			xhttp.send();
+		}
+	</script>
+</body>
+</html>
